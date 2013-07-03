@@ -26,6 +26,8 @@
 #include <jtag/jtag.h>
 #include "target/target.h"
 #include "target/target_type.h"
+#include "target/armv7m.h"
+#include "target/cortex_m.h"
 #include "rtos.h"
 #include "helper/log.h"
 #include "helper/types.h"
@@ -45,7 +47,12 @@ struct FreeRTOS_params {
 	const unsigned char list_elem_content_offset;
 	const unsigned char thread_stack_offset;
 	const unsigned char thread_name_offset;
-	const struct rtos_register_stacking *stacking_info;
+	const struct rtos_register_stacking *stacking_info_cm3;
+	const struct rtos_register_stacking *stacking_info_cm3_pad;
+	const struct rtos_register_stacking *stacking_info_cm4f;
+	const struct rtos_register_stacking *stacking_info_cm4f_pad;
+	const struct rtos_register_stacking *stacking_info_cm4f_fpu;
+	const struct rtos_register_stacking *stacking_info_cm4f_fpu_pad;
 };
 
 const struct FreeRTOS_params FreeRTOS_params_list[] = {
@@ -59,7 +66,12 @@ const struct FreeRTOS_params FreeRTOS_params_list[] = {
 	12,						/* list_elem_content_offset */
 	0,						/* thread_stack_offset; */
 	52,						/* thread_name_offset; */
-	&rtos_standard_Cortex_M3_stacking,	/* stacking_info */
+	&rtos_standard_Cortex_M3_stacking,			/* stacking_m3_info */
+	&rtos_standard_Cortex_M3_stacking_pad,		/* stacking_m3_info_pad */
+	&rtos_standard_Cortex_M4F_stacking,			/* stacking_m4f_info */
+	&rtos_standard_Cortex_M4F_stacking_pad,		/* stacking_m4f_info_pad */
+	&rtos_standard_Cortex_M4F_FPU_stacking,		/* stacking_m4f_fpu_info */
+	&rtos_standard_Cortex_M4F_FPU_stacking_pad,	/* stacking_m4f_fpu_info_pad */
 	},
 	{
 	"hla_target",			/* target_name */
@@ -71,7 +83,12 @@ const struct FreeRTOS_params FreeRTOS_params_list[] = {
 	12,						/* list_elem_content_offset */
 	0,						/* thread_stack_offset; */
 	52,						/* thread_name_offset; */
-	&rtos_standard_Cortex_M3_stacking,	/* stacking_info */
+	&rtos_standard_Cortex_M3_stacking,			/* stacking_m3_info */
+	&rtos_standard_Cortex_M3_stacking_pad,		/* stacking_m3_info_pad */
+	&rtos_standard_Cortex_M4F_stacking,			/* stacking_m4f_info */
+	&rtos_standard_Cortex_M4F_stacking_pad,		/* stacking_m4f_info_pad */
+	&rtos_standard_Cortex_M4F_FPU_stacking,		/* stacking_m4f_fpu_info */
+	&rtos_standard_Cortex_M4F_FPU_stacking_pad,	/* stacking_m4f_fpu_info_pad */
 	}
 };
 
@@ -390,7 +407,116 @@ static int FreeRTOS_get_thread_reg_list(struct rtos *rtos, int64_t thread_id, ch
 		return retval;
 	}
 
-	return rtos_generic_stack_read(rtos->target, param->stacking_info, stack_ptr, hex_reg_list);
+	/* Check for armv7m with *enabled* FPU, i.e. a Cortex M4F */
+	int cm4_fpu_enabled = 0;
+	struct armv7m_common *armv7m_target = target_to_armv7m(rtos->target);
+	if (is_armv7m(armv7m_target)) {
+		if (armv7m_target->fp_feature == FPv4_SP) {
+			/* Found ARM v7m target which includes a FPU */
+			uint32_t cpacr;
+
+			retval = target_read_u32(rtos->target, FPU_CPACR, &cpacr);
+			if (retval != ERROR_OK) {
+				LOG_ERROR("Could not read CPACR register to check FPU state");
+				return -1;
+			}
+
+			/* Check if CP10 and CP11 are set to full access. */
+			if (cpacr & 0x00F00000) {
+				/* Found target with enabled FPU */
+				cm4_fpu_enabled = 1;
+			}
+		}
+	}
+
+	if (cm4_fpu_enabled == 1) {
+		/* Read the LR to decide between stacking with or without FPU */
+		uint32_t LR_svc = 0;
+		retval = target_read_buffer(rtos->target,
+				stack_ptr + 0x20,
+				param->pointer_width,
+				(uint8_t *)&LR_svc);
+		if (retval != ERROR_OK) {
+			LOG_OUTPUT("Error reading stack frame from FreeRTOS thread\r\n");
+			return retval;
+		}
+
+		if ((LR_svc & 0x10) == 0) {
+			/* this is a CM4F frame with FPU register set */
+			/* Read the xPSR to decide between padding or not */
+			uint32_t xPSR = 0;
+			retval = target_read_buffer(rtos->target,
+					stack_ptr + 0x80,
+					param->pointer_width,
+					(uint8_t *)&xPSR);
+			if (retval != ERROR_OK) {
+				LOG_OUTPUT("Error reading stack frame from FreeRTOS thread\r\n");
+				return retval;
+			}
+
+			if (xPSR & 0x200)
+				return rtos_generic_stack_read(
+					rtos->target,
+					param->stacking_info_cm4f_fpu_pad,
+					stack_ptr,
+					hex_reg_list);
+			else
+				return rtos_generic_stack_read(
+					rtos->target,
+					param->stacking_info_cm4f_fpu,
+					stack_ptr,
+					hex_reg_list);
+		} else {
+			/* this is a CM4F frame without FPU register set */
+			/* Read the xPSR to decide between padding or not by examining bit 9*/
+			uint32_t xPSR = 0;
+			retval = target_read_buffer(rtos->target,
+					stack_ptr + 0x40,
+					param->pointer_width,
+					(uint8_t *)&xPSR);
+			if (retval != ERROR_OK) {
+				LOG_OUTPUT("Error reading stack frame from FreeRTOS thread\r\n");
+				return retval;
+			}
+
+			if (xPSR & 0x200)
+				return rtos_generic_stack_read(
+					rtos->target,
+					param->stacking_info_cm4f_pad,
+					stack_ptr,
+					hex_reg_list);
+			else
+				return rtos_generic_stack_read(
+					rtos->target,
+					param->stacking_info_cm4f,
+					stack_ptr,
+					hex_reg_list);
+		}
+	} else {
+		/* Read the xPSR to decide between padding or not */
+		uint32_t xPSR = 0;
+		retval = target_read_buffer(rtos->target,
+				stack_ptr + 0x3c,
+				param->pointer_width,
+				(uint8_t *)&xPSR);
+		if (retval != ERROR_OK) {
+			LOG_OUTPUT("Error reading stack frame from FreeRTOS thread\r\n");
+			return retval;
+		}
+
+		if (xPSR & 0x200)
+			return rtos_generic_stack_read(
+				rtos->target,
+				param->stacking_info_cm3_pad,
+				stack_ptr,
+				hex_reg_list);
+		else
+			return rtos_generic_stack_read(
+				rtos->target,
+				param->stacking_info_cm3,
+				stack_ptr,
+				hex_reg_list);
+	}
 }
 
 static int FreeRTOS_get_symbol_list_to_lookup(symbol_table_elem_t *symbol_list[])

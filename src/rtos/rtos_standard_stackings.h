@@ -28,6 +28,11 @@
 #include "rtos.h"
 
 extern const struct rtos_register_stacking rtos_standard_Cortex_M3_stacking;
+extern const struct rtos_register_stacking rtos_standard_Cortex_M3_stacking_pad;
+extern const struct rtos_register_stacking rtos_standard_Cortex_M4F_stacking;
+extern const struct rtos_register_stacking rtos_standard_Cortex_M4F_stacking_pad;
+extern const struct rtos_register_stacking rtos_standard_Cortex_M4F_FPU_stacking;
+extern const struct rtos_register_stacking rtos_standard_Cortex_M4F_FPU_stacking_pad;
 extern const struct rtos_register_stacking rtos_standard_Cortex_R4_stacking;
 
 #endif	/* ifndef INCLUDED_RTOS_STANDARD_STACKINGS_H_ */
