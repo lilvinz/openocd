@@ -135,7 +135,7 @@ static char *FreeRTOS_symbol_list[] = {
 	"xTasksWaitingTermination",
 	"xSuspendedTaskList",
 	"uxCurrentNumberOfTasks",
-	"uxTopUsedPriority",
+	"uxTopReadyPriority",
 	NULL
 };
 
